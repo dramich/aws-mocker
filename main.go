@@ -11,6 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"text/template"
+	"unicode"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -29,8 +30,9 @@ type FuncSig struct {
 }
 
 type TemplateData struct {
-	PackageName string
-	Middlewares map[PackageInfo][]FuncSig
+	ClientDefault bool
+	PackageName   string
+	Middlewares   map[PackageInfo][]FuncSig
 }
 
 // This is hardcoded to only look for the services clients
@@ -38,11 +40,13 @@ var filter = regexp.MustCompile("github.com/aws/aws-sdk-go-v2/service/*")
 
 func main() {
 	var searchPackages, baseDir, outputDir, packageName string
+	var clientDefault bool
 
 	flag.StringVar(&baseDir, "dir", "", "Base directory for the module")
 	flag.StringVar(&outputDir, "output-dir", "", "Output directory for the generated file")
 	flag.StringVar(&packageName, "package-name", "awsmocked", "Name of the generated package")
 	flag.StringVar(&searchPackages, "packages", "", "Comma seperated list of packages to search")
+	flag.BoolVar(&clientDefault, "default-panic", false, "Add a panic for Operations that are not mocked")
 
 	flag.Parse()
 
@@ -114,8 +118,9 @@ func main() {
 	w.Flush()
 
 	t := TemplateData{
-		PackageName: packageName,
-		Middlewares: resses,
+		ClientDefault: clientDefault,
+		PackageName:   packageName,
+		Middlewares:   resses,
 	}
 
 	tmpl, err := template.New("mock").Funcs(templateFuncs).Parse(mockTemplate)
@@ -162,7 +167,40 @@ import (
 
 
 {{- range $package, $funcs := .Middlewares }}
-func {{ $package.Name | ToTitle }}MiddlewareInjector() func(stack *middleware.Stack) error {
+
+type {{ $package.Name | ToTitle }}Mock struct {
+	callCount map[string]int
+	{{ range $funcs -}}
+	{{ .FuncName | LowerCaseFirst }}MockReturns {{ .FuncName }}Returns
+	{{ end -}}
+}
+
+func New{{ $package.Name | ToTitle }}Mock() *{{ $package.Name | ToTitle }}Mock {
+	return &{{ $package.Name | ToTitle }}Mock{
+		callCount: make(map[string]int),
+	}
+}
+
+func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) GetCallCount() map[string]int {
+	return {{ $package.Name | FirstCharLower }}.callCount
+}
+
+{{ range $funcs }}
+type {{ .FuncName }}Returns struct {
+	Return {{ $package.Name }}.{{ .Return }}
+	Error error
+}
+
+func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) Set{{ .FuncName }}Return (o {{ $package.Name }}.{{ .Return }}) {
+	{{ $package.Name | FirstCharLower }}.{{ .FuncName | LowerCaseFirst }}MockReturns.Return = o
+}
+
+func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) Set{{ .FuncName }}Error (e error) {
+	{{ $package.Name | FirstCharLower }}.{{ .FuncName | LowerCaseFirst }}MockReturns.Error = e
+}
+{{ end }}
+
+func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) {{ $package.Name | ToTitle }}MiddlewareInjector() func(stack *middleware.Stack) error {
 	return func(stack *middleware.Stack) error {
 		return stack.Finalize.Add(
 			middleware.FinalizeMiddlewareFunc(
@@ -171,15 +209,20 @@ func {{ $package.Name | ToTitle }}MiddlewareInjector() func(stack *middleware.St
 					switch awsmiddle.GetOperationName(ctx) {
 					{{- range $funcs -}}
 					case "{{ .FuncName }}":
+						{{ $package.Name | FirstCharLower }}.callCount["{{ .FuncName }}"] += 1
 						return middleware.FinalizeOutput{
-							Result: &{{ $package.Name }}.{{ .Return }}{},
-						}, middleware.Metadata{}, nil
+							Result: &{{ $package.Name | FirstCharLower }}.{{ .FuncName | LowerCaseFirst }}MockReturns.Return,
+						}, middleware.Metadata{}, {{ $package.Name | FirstCharLower }}.{{ .FuncName | LowerCaseFirst }}MockReturns.Error
 					{{ end -}}
+					{{ if $.ClientDefault -}}
 					default:
 						panic(fmt.Sprintf("Operation is not mocked %s", awsmiddle.GetOperationName(ctx)))
 					}
-					// TODO: Add a switch for the default vs return here
-					// return middleware.FinalizeOutput{}, middleware.Metadata{}, nil
+					{{ else -}}
+					}
+
+					return middleware.FinalizeOutput{}, middleware.Metadata{}, nil
+					{{ end }}
 				},
 			),
 			middleware.Before,
@@ -190,7 +233,25 @@ func {{ $package.Name | ToTitle }}MiddlewareInjector() func(stack *middleware.St
 
 var templateFuncs = template.FuncMap{
 	"ToTitle": func(s string) string {
-		fmt.Println(s)
+		if n, ok := serviceNames[s]; ok {
+			return n
+		}
 		return cases.Title(language.English).String(s)
 	},
+	"FirstCharLower": func(s string) string {
+		return string(strings.ToLower(s)[0])
+	},
+	"LowerCaseFirst": func(s string) string {
+		r := []rune(s)
+		r[0] = unicode.ToLower(r[0])
+
+		return string(r)
+	},
+}
+
+// serviceNames is a mapping of package names to 'proper' naming conventions for the service
+var serviceNames = map[string]string{
+	"cloudformation": "CloudFormation",
+	"ec2":            "EC2",
+	"sts":            "STS",
 }
