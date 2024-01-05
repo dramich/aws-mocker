@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"unicode"
@@ -93,10 +94,14 @@ func Run(opts *Options) error {
 							Name: f.Pkg().Name(),
 							Path: f.Pkg().Path(),
 						}
-						resses[packageKey] = append(resses[packageKey], FuncSig{
+
+						funcSig := FuncSig{
 							FuncName: f.Name(),
 							Return:   strings.Split(sig.Results().At(0).Type().String(), ".")[2],
-						})
+						}
+						if !slices.Contains(resses[packageKey], funcSig) {
+							resses[packageKey] = append(resses[packageKey], funcSig)
+						}
 					}
 				}
 			}
