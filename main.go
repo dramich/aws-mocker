@@ -1,257 +1,61 @@
 package main
 
 import (
-	"bytes"
 	"flag"
 	"fmt"
-	"go/types"
 	log "log/slog"
 	"os"
-	"regexp"
 	"strings"
-	"text/tabwriter"
-	"text/template"
-	"unicode"
 
-	"golang.org/x/text/cases"
-	"golang.org/x/text/language"
-	"golang.org/x/tools/go/packages"
-	"golang.org/x/tools/imports"
+	"github.com/dramich/aws-mocker/pkg/mock"
 )
 
-type PackageInfo struct {
-	Path string
-	Name string
-}
-
-type FuncSig struct {
-	FuncName string
-	Return   string
-}
-
-type TemplateData struct {
-	ClientDefault bool
-	PackageName   string
-	Middlewares   map[PackageInfo][]FuncSig
-}
-
-// This is hardcoded to only look for the services clients
-var filter = regexp.MustCompile("github.com/aws/aws-sdk-go-v2/service/*")
-
 func main() {
-	var searchPackages, baseDir, outputDir, packageName string
-	var clientDefault bool
+	var (
+		mockOpts mock.Options
+		logLevel string
+	)
 
-	flag.StringVar(&baseDir, "dir", "", "Base directory for the module")
-	flag.StringVar(&outputDir, "output-dir", "", "Output directory for the generated file")
-	flag.StringVar(&packageName, "package-name", "awsmocked", "Name of the generated package")
-	flag.StringVar(&searchPackages, "packages", "", "Comma seperated list of packages to search")
-	flag.BoolVar(&clientDefault, "default-panic", false, "Add a panic for Operations that are not mocked")
+	flag.StringVar(&mockOpts.BaseDir, "dir", "", "Base directory for the module")
+	flag.StringVar(&mockOpts.OutputDir, "output-dir", "", "Output directory for the generated file, if not provided will write to stdout")
+	flag.StringVar(&mockOpts.PackageName, "package-name", "awsmocked", "Name of the generated package")
+	flag.StringVar(&mockOpts.SearchPackages, "packages", "", "Comma seperated list of packages to search")
+	flag.BoolVar(&mockOpts.ClientDefault, "default-panic", false, "Add a panic for Operations that are not mocked")
+
+	flag.StringVar(&logLevel, "log-level", "info", "Set the log level [debug, info, warn, error]")
 
 	flag.Parse()
 
-	if searchPackages == "" || baseDir == "" {
-		log.Error("packages and dir are required flags")
+	log.SetDefault(log.New(log.NewTextHandler(os.Stderr, &log.HandlerOptions{
+		Level: logLevelFromArg(logLevel),
+	})))
+
+	if mockOpts.SearchPackages == "" || mockOpts.BaseDir == "" {
+		fmt.Println("'packages' and 'dir' are required flags")
+		flag.Usage()
 		os.Exit(1)
 	}
 
-	resses := make(map[PackageInfo][]FuncSig)
-
-	conf := &packages.Config{Dir: baseDir, Mode: packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedTypes | packages.NeedTypesInfo}
-	pkgs, err := packages.Load(conf, strings.Split(searchPackages, ",")...)
+	err := mock.Run(&mockOpts)
 	if err != nil {
 		log.Error(err.Error())
 		os.Exit(1)
 	}
 
-	for _, pkg := range pkgs {
-		if len(pkg.Errors) != 0 {
-			fmt.Println(pkg.Errors)
-			os.Exit(1)
-		}
-	}
-
-	for _, pkg := range pkgs {
-		for _, obj := range pkg.TypesInfo.Uses {
-
-			// filter out all the func types
-			if f, ok := obj.(*types.Func); ok {
-				// some (error).Error() objects do not have a Pkg. Filter these out so .Pkg().Path() does not panic
-				if obj.Pkg() == nil {
-					// log.Debug("%s xxxxxx %s xxxxx %s\n", obj, obj.Pkg(), pkg.Fset.Position(obj.Pos()).String())
-					continue
-				}
-
-				// filter out only funcs where package matches
-				if filter.Match([]byte(obj.Pkg().Path())) {
-					// If parent is nil it's a method
-					if f.Parent() == nil {
-						sig := f.Type().(*types.Signature)
-						fmt.Println(sig.Results().At(0).Pkg().Name())
-						fmt.Println(strings.Split(sig.Results().At(0).Type().String(), ".")[2])
-
-						log.Debug("func %s\t%s\t%s\t%s\n", obj.Name(), obj.Pkg().Name(), obj.Pkg().Path(), pkg.Fset.Position(obj.Pos()))
-						packageKey := PackageInfo{
-							Name: f.Pkg().Name(),
-							Path: f.Pkg().Path(),
-						}
-						resses[packageKey] = append(resses[packageKey], FuncSig{
-							FuncName: f.Name(),
-							Return:   strings.Split(sig.Results().At(0).Type().String(), ".")[2],
-						})
-					}
-				}
-			}
-		}
-	}
-
-	w := new(tabwriter.Writer)
-	w.Init(os.Stdout, 8, 8, 0, '\t', 0)
-
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", "Package Name", "Path", "Func", "Return")
-
-	for k, v := range resses {
-		for _, j := range v {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", k.Name, k.Path, j.FuncName, j.Return)
-		}
-	}
-	w.Flush()
-
-	t := TemplateData{
-		ClientDefault: clientDefault,
-		PackageName:   packageName,
-		Middlewares:   resses,
-	}
-
-	tmpl, err := template.New("mock").Funcs(templateFuncs).Parse(mockTemplate)
-	if err != nil {
-		log.Error(err.Error())
-		os.Exit(1)
-	}
-	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, t); err != nil {
-		log.Error(err.Error())
-		os.Exit(1)
-	}
-
-	// fmt.Println(string(buf.Bytes()))
-
-	formatted, err := imports.Process("filename", buf.Bytes(), &imports.Options{
-		TabWidth:  4,
-		TabIndent: true,
-		Comments:  true,
-		Fragment:  true,
-	})
-	if err != nil {
-		log.Error(err.Error())
-		os.Exit(1)
-	}
-
-	fmt.Println(string(formatted))
 }
 
-var mockTemplate = `// Code generated by aws-mocker; DO NOT EDIT.
-
-package {{.PackageName}}
-
-import (
-	"context"
-	"fmt"
-
-	awsmiddle "github.com/aws/aws-sdk-go-v2/aws/middleware"
-	"github.com/aws/smithy-go/middleware"
-	{{- range $i, $j := .Middlewares }}
-	"{{ $i.Path }}"
-	{{- end }}
-)
-
-
-{{- range $package, $funcs := .Middlewares }}
-
-type {{ $package.Name | ToTitle }}Mock struct {
-	callCount map[string]int
-	{{ range $funcs -}}
-	{{ .FuncName | LowerCaseFirst }}MockReturns {{ .FuncName }}Returns
-	{{ end -}}
-}
-
-func New{{ $package.Name | ToTitle }}Mock() *{{ $package.Name | ToTitle }}Mock {
-	return &{{ $package.Name | ToTitle }}Mock{
-		callCount: make(map[string]int),
+func logLevelFromArg(arg string) log.Level {
+	switch strings.ToLower(arg) {
+	case "debug":
+		return log.LevelDebug
+	case "info":
+		return log.LevelInfo
+	case "warn":
+		return log.LevelWarn
+	case "error":
+		return log.LevelError
+	default:
+		log.Warn("Unable to parse log level, defaulting to 'Info'")
+		return log.LevelInfo
 	}
-}
-
-func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) GetCallCount() map[string]int {
-	return {{ $package.Name | FirstCharLower }}.callCount
-}
-
-{{ range $funcs }}
-type {{ .FuncName }}Returns struct {
-	Return {{ $package.Name }}.{{ .Return }}
-	Error error
-}
-
-func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) Set{{ .FuncName }}Return (o {{ $package.Name }}.{{ .Return }}) {
-	{{ $package.Name | FirstCharLower }}.{{ .FuncName | LowerCaseFirst }}MockReturns.Return = o
-}
-
-func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) Set{{ .FuncName }}Error (e error) {
-	{{ $package.Name | FirstCharLower }}.{{ .FuncName | LowerCaseFirst }}MockReturns.Error = e
-}
-{{ end }}
-
-func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) {{ $package.Name | ToTitle }}MiddlewareInjector() func(stack *middleware.Stack) error {
-	return func(stack *middleware.Stack) error {
-		return stack.Finalize.Add(
-			middleware.FinalizeMiddlewareFunc(
-				"{{ $package.Name | ToTitle }}Middleware",
-				func(ctx context.Context, input middleware.FinalizeInput, handler middleware.FinalizeHandler) (middleware.FinalizeOutput, middleware.Metadata, error) {
-					switch awsmiddle.GetOperationName(ctx) {
-					{{- range $funcs -}}
-					case "{{ .FuncName }}":
-						{{ $package.Name | FirstCharLower }}.callCount["{{ .FuncName }}"] += 1
-						return middleware.FinalizeOutput{
-							Result: &{{ $package.Name | FirstCharLower }}.{{ .FuncName | LowerCaseFirst }}MockReturns.Return,
-						}, middleware.Metadata{}, {{ $package.Name | FirstCharLower }}.{{ .FuncName | LowerCaseFirst }}MockReturns.Error
-					{{ end -}}
-					{{ if $.ClientDefault -}}
-					default:
-						panic(fmt.Sprintf("Operation is not mocked %s", awsmiddle.GetOperationName(ctx)))
-					}
-					{{ else -}}
-					}
-
-					return middleware.FinalizeOutput{}, middleware.Metadata{}, nil
-					{{ end }}
-				},
-			),
-			middleware.Before,
-		)
-	}
-}
-{{ end }}`
-
-var templateFuncs = template.FuncMap{
-	"ToTitle": func(s string) string {
-		if n, ok := serviceNames[s]; ok {
-			return n
-		}
-		return cases.Title(language.English).String(s)
-	},
-	"FirstCharLower": func(s string) string {
-		return string(strings.ToLower(s)[0])
-	},
-	"LowerCaseFirst": func(s string) string {
-		r := []rune(s)
-		r[0] = unicode.ToLower(r[0])
-
-		return string(r)
-	},
-}
-
-// serviceNames is a mapping of package names to 'proper' naming conventions for the service
-var serviceNames = map[string]string{
-	"cloudformation": "CloudFormation",
-	"ec2":            "EC2",
-	"sts":            "STS",
 }
