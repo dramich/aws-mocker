@@ -22,7 +22,7 @@ func main() {
 	flag.StringVar(&mockOpts.BaseDir, "dir", "", "Base directory for the module (required)")
 	flag.StringVar(&mockOpts.OutputDir, "output-dir", "", "Output directory for the generated file, if not provided will write to stdout")
 	flag.StringVar(&mockOpts.PackageName, "package-name", "awsmocked", "Name of the generated package")
-	flag.StringVar(&mockOpts.SearchPackages, "packages", "", "Comma seperated list of packages to search (required)")
+	flag.StringVar(&mockOpts.SearchPackages, "packages", "", "Comma separated list of packages to search (required)")
 	flag.BoolVar(&mockOpts.ClientDefault, "default-panic", false, "Add a panic for Operations that are not mocked")
 
 	flag.StringVar(&logLevel, "log-level", "info", "Set the log level [debug, info, warn, error]")
@@ -49,8 +49,7 @@ func main() {
 
 	mockOpts.Writer = w
 
-	err := mock.Run(&mockOpts)
-	if err != nil {
+	if err := mock.Run(&mockOpts); err != nil {
 		log.Error(err.Error())
 		os.Exit(1)
 	}

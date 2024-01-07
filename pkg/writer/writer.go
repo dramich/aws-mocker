@@ -14,7 +14,7 @@ type fileWriter struct {
 	filePath string
 }
 
-func (f fileWriter) Write(p []byte) (n int, err error) {
+func (f fileWriter) Write(p []byte) (int, error) {
 	dir, _ := path.Split(f.filePath)
 
 	if dir != "" {

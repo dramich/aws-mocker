@@ -75,11 +75,7 @@ func Run(opts *Options) error {
 			fmt.Println(pkg.Errors)
 			os.Exit(1)
 		}
-	}
-
-	for _, pkg := range pkgs {
 		for _, obj := range pkg.TypesInfo.Uses {
-
 			// filter out all the func types
 			if f, ok := obj.(*types.Func); ok {
 				// some (error).Error() objects do not have a Pkg. Filter these out so .Pkg().Path() does not panic
@@ -88,18 +84,23 @@ func Run(opts *Options) error {
 				}
 
 				// filter out only funcs where package matches
-				if filter.Match([]byte(obj.Pkg().Path())) {
+				if filter.MatchString(obj.Pkg().Path()) {
 					// If parent is nil it's a method
 					if f.Parent() == nil {
 						log.Debug("func", obj.Name(), obj.Pkg().Name(), obj.Pkg().Path(), pkg.Fset.Position(obj.Pos()))
 
-						sig := f.Type().(*types.Signature)
+						sig, sigOK := f.Type().(*types.Signature)
+						if !sigOK {
+							log.Error("failed to convert", "func", f.Name())
+							os.Exit(1)
+						}
+
 						funcSig := FuncSig{
 							FuncName: f.Name(),
 							Return:   strings.Split(sig.Results().At(0).Type().String(), ".")[2],
 						}
 
-						if p, ok := resses[f.Pkg().Path()]; ok {
+						if p, pkgOK := resses[f.Pkg().Path()]; pkgOK {
 							if !slices.Contains(p.FuncSigs, funcSig) {
 								p.FuncSigs = append(p.FuncSigs, funcSig)
 								resses[f.Pkg().Path()] = p
@@ -119,17 +120,7 @@ func Run(opts *Options) error {
 
 	// The template writer is useful to see what packages are found when debugging issues and only prints when debug is enabled
 	if log.Default().Handler().Enabled(context.Background(), log.LevelDebug) {
-		w := new(tabwriter.Writer)
-		w.Init(os.Stdout, 8, 8, 0, '\t', 0)
-
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", "Package Name", "Path", "Func", "Return")
-
-		for _, v := range resses {
-			for _, j := range v.FuncSigs {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", v.Name, v.Path, j.FuncName, j.Return)
-			}
-		}
-		w.Flush()
+		writePackageTable(resses)
 	}
 
 	sorted := sortPackages(resses)
@@ -146,7 +137,7 @@ func Run(opts *Options) error {
 		os.Exit(1)
 	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, t); err != nil {
+	if err = tmpl.Execute(&buf, t); err != nil {
 		log.Error(err.Error())
 		os.Exit(1)
 	}
@@ -193,7 +184,7 @@ func templateFuncs() template.FuncMap {
 // sortPackages sorts the package based on the path, funcs based on their name
 // and converts to a slice for the template
 func sortPackages(in map[string]PackageInfo) []PackageInfo {
-	var out []PackageInfo
+	out := make([]PackageInfo, 0, len(in))
 	for _, v := range in {
 		sort.Slice(v.FuncSigs, func(i, j int) bool {
 			return v.FuncSigs[i].FuncName < v.FuncSigs[j].FuncName
@@ -205,4 +196,18 @@ func sortPackages(in map[string]PackageInfo) []PackageInfo {
 		return out[i].Path < out[j].Path
 	})
 	return out
+}
+
+func writePackageTable(resses map[string]PackageInfo) {
+	w := new(tabwriter.Writer)
+	w.Init(os.Stdout, 8, 8, 0, '\t', 0)
+
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", "Package Name", "Path", "Func", "Return")
+
+	for _, v := range resses {
+		for _, j := range v.FuncSigs {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", v.Name, v.Path, j.FuncName, j.Return)
+		}
+	}
+	w.Flush()
 }
