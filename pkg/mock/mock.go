@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"go/types"
 	"html/template"
+	"io"
 	log "log/slog"
 	"os"
-	"path"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"unicode"
@@ -28,11 +29,13 @@ type Options struct {
 	OutputDir      string
 
 	ClientDefault bool
+	Writer        io.Writer
 }
 
 type PackageInfo struct {
-	Path string
-	Name string
+	Path     string
+	Name     string
+	FuncSigs []FuncSig
 }
 
 type FuncSig struct {
@@ -43,7 +46,7 @@ type FuncSig struct {
 type TemplateData struct {
 	ClientDefault bool
 	PackageName   string
-	Middlewares   map[PackageInfo][]FuncSig
+	Middlewares   []PackageInfo
 }
 
 // This is hardcoded to only look for the services clients
@@ -52,12 +55,13 @@ var filter = regexp.MustCompile("github.com/aws/aws-sdk-go-v2/service/*")
 // serviceNames is a mapping of package names to 'proper' naming conventions for the service
 var serviceNames = map[string]string{
 	"cloudformation": "CloudFormation",
+	"dynamodb":       "DynamoDB",
 	"ec2":            "EC2",
 	"sts":            "STS",
 }
 
 func Run(opts *Options) error {
-	resses := make(map[PackageInfo][]FuncSig)
+	resses := make(map[string]PackageInfo)
 
 	conf := &packages.Config{Dir: opts.BaseDir, Mode: packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedTypes | packages.NeedTypesInfo}
 	pkgs, err := packages.Load(conf, strings.Split(opts.SearchPackages, ",")...)
@@ -87,20 +91,25 @@ func Run(opts *Options) error {
 				if filter.Match([]byte(obj.Pkg().Path())) {
 					// If parent is nil it's a method
 					if f.Parent() == nil {
-						sig := f.Type().(*types.Signature)
-
 						log.Debug("func", obj.Name(), obj.Pkg().Name(), obj.Pkg().Path(), pkg.Fset.Position(obj.Pos()))
-						packageKey := PackageInfo{
-							Name: f.Pkg().Name(),
-							Path: f.Pkg().Path(),
-						}
 
+						sig := f.Type().(*types.Signature)
 						funcSig := FuncSig{
 							FuncName: f.Name(),
 							Return:   strings.Split(sig.Results().At(0).Type().String(), ".")[2],
 						}
-						if !slices.Contains(resses[packageKey], funcSig) {
-							resses[packageKey] = append(resses[packageKey], funcSig)
+
+						if p, ok := resses[f.Pkg().Path()]; ok {
+							if !slices.Contains(p.FuncSigs, funcSig) {
+								p.FuncSigs = append(p.FuncSigs, funcSig)
+								resses[f.Pkg().Path()] = p
+							}
+						} else {
+							resses[f.Pkg().Path()] = PackageInfo{
+								Name:     f.Pkg().Name(),
+								Path:     f.Pkg().Path(),
+								FuncSigs: []FuncSig{funcSig},
+							}
 						}
 					}
 				}
@@ -115,18 +124,20 @@ func Run(opts *Options) error {
 
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", "Package Name", "Path", "Func", "Return")
 
-		for k, v := range resses {
-			for _, j := range v {
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", k.Name, k.Path, j.FuncName, j.Return)
+		for _, v := range resses {
+			for _, j := range v.FuncSigs {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", v.Name, v.Path, j.FuncName, j.Return)
 			}
 		}
 		w.Flush()
 	}
 
+	sorted := sortPackages(resses)
+
 	t := TemplateData{
 		ClientDefault: opts.ClientDefault,
 		PackageName:   opts.PackageName,
-		Middlewares:   resses,
+		Middlewares:   sorted,
 	}
 
 	tmpl, err := template.New("mock").Funcs(templateFuncs()).Parse(fullTemplate)
@@ -154,16 +165,9 @@ func Run(opts *Options) error {
 		os.Exit(1)
 	}
 
-	if opts.OutputDir == "" {
-		fmt.Println(string(formatted))
-	} else {
-		if err := os.MkdirAll(opts.OutputDir, os.ModePerm); err != nil {
-			return err
-		}
-		return os.WriteFile(path.Join(opts.OutputDir, opts.PackageName+".go"), formatted, 0644)
-	}
+	_, err = opts.Writer.Write(formatted)
 
-	return nil
+	return err
 }
 
 func templateFuncs() template.FuncMap {
@@ -184,4 +188,21 @@ func templateFuncs() template.FuncMap {
 			return string(r)
 		},
 	}
+}
+
+// sortPackages sorts the package based on the path, funcs based on their name
+// and converts to a slice for the template
+func sortPackages(in map[string]PackageInfo) []PackageInfo {
+	var out []PackageInfo
+	for _, v := range in {
+		sort.Slice(v.FuncSigs, func(i, j int) bool {
+			return v.FuncSigs[i].FuncName < v.FuncSigs[j].FuncName
+		})
+		out = append(out, v)
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Path < out[j].Path
+	})
+	return out
 }

@@ -10,17 +10,17 @@ import (
 
 	awsmiddle "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/smithy-go/middleware"
-	{{- range $i, $j := .Middlewares }}
-	"{{ $i.Path }}"
+	{{- range .Middlewares }}
+	"{{ .Path }}"
 	{{- end }}
 )
 
 
-{{- range $package, $funcs := .Middlewares }}
+{{- range $i, $package := .Middlewares }}
 
 type {{ $package.Name | ToTitle }}Mock struct {
 	callCount map[string]int
-	{{ range $funcs -}}
+	{{ range $package.FuncSigs -}}
 	{{ .FuncName | LowerCaseFirst }}MockReturns {{ .FuncName }}Returns
 	{{ end -}}
 }
@@ -35,7 +35,7 @@ func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) G
 	return {{ $package.Name | FirstCharLower }}.callCount
 }
 
-{{ range $funcs }}
+{{ range $package.FuncSigs }}
 type {{ .FuncName }}Returns struct {
 	Return {{ $package.Name }}.{{ .Return }}
 	Error error
@@ -57,7 +57,7 @@ func ({{ $package.Name | FirstCharLower }} *{{ $package.Name | ToTitle }}Mock) {
 				"{{ $package.Name | ToTitle }}Middleware",
 				func(ctx context.Context, input middleware.FinalizeInput, handler middleware.FinalizeHandler) (middleware.FinalizeOutput, middleware.Metadata, error) {
 					switch awsmiddle.GetOperationName(ctx) {
-					{{- range $funcs -}}
+					{{- range $package.FuncSigs -}}
 					case "{{ .FuncName }}":
 						{{ $package.Name | FirstCharLower }}.callCount["{{ .FuncName }}"] += 1
 						return middleware.FinalizeOutput{

@@ -33,6 +33,7 @@ func main() {
 
 	sts := sts.NewFromConfig(cfg)
 
+	sts.GetCallerIdentity(context.TODO(), nil)
 	sts.AssumeRole(context.TODO(), nil)
 
 }

@@ -11,33 +11,20 @@ import (
 	"github.com/aws/smithy-go/middleware"
 )
 
-type DynamodbMock struct {
+type DynamoDBMock struct {
 	callCount               map[string]int
-	listTablesMockReturns   ListTablesReturns
 	batchGetItemMockReturns BatchGetItemReturns
+	listTablesMockReturns   ListTablesReturns
 }
 
-func NewDynamodbMock() *DynamodbMock {
-	return &DynamodbMock{
+func NewDynamoDBMock() *DynamoDBMock {
+	return &DynamoDBMock{
 		callCount: make(map[string]int),
 	}
 }
 
-func (d *DynamodbMock) GetCallCount() map[string]int {
+func (d *DynamoDBMock) GetCallCount() map[string]int {
 	return d.callCount
-}
-
-type ListTablesReturns struct {
-	Return dynamodb.ListTablesOutput
-	Error  error
-}
-
-func (d *DynamodbMock) SetListTablesReturn(o dynamodb.ListTablesOutput) {
-	d.listTablesMockReturns.Return = o
-}
-
-func (d *DynamodbMock) SetListTablesError(e error) {
-	d.listTablesMockReturns.Error = e
 }
 
 type BatchGetItemReturns struct {
@@ -45,31 +32,44 @@ type BatchGetItemReturns struct {
 	Error  error
 }
 
-func (d *DynamodbMock) SetBatchGetItemReturn(o dynamodb.BatchGetItemOutput) {
+func (d *DynamoDBMock) SetBatchGetItemReturn(o dynamodb.BatchGetItemOutput) {
 	d.batchGetItemMockReturns.Return = o
 }
 
-func (d *DynamodbMock) SetBatchGetItemError(e error) {
+func (d *DynamoDBMock) SetBatchGetItemError(e error) {
 	d.batchGetItemMockReturns.Error = e
 }
 
-func (d *DynamodbMock) DynamodbMiddlewareInjector() func(stack *middleware.Stack) error {
+type ListTablesReturns struct {
+	Return dynamodb.ListTablesOutput
+	Error  error
+}
+
+func (d *DynamoDBMock) SetListTablesReturn(o dynamodb.ListTablesOutput) {
+	d.listTablesMockReturns.Return = o
+}
+
+func (d *DynamoDBMock) SetListTablesError(e error) {
+	d.listTablesMockReturns.Error = e
+}
+
+func (d *DynamoDBMock) DynamoDBMiddlewareInjector() func(stack *middleware.Stack) error {
 	return func(stack *middleware.Stack) error {
 		return stack.Finalize.Add(
 			middleware.FinalizeMiddlewareFunc(
-				"DynamodbMiddleware",
+				"DynamoDBMiddleware",
 				func(ctx context.Context, input middleware.FinalizeInput, handler middleware.FinalizeHandler) (middleware.FinalizeOutput, middleware.Metadata, error) {
 					switch awsmiddle.GetOperationName(ctx) {
-					case "ListTables":
-						d.callCount["ListTables"] += 1
-						return middleware.FinalizeOutput{
-							Result: &d.listTablesMockReturns.Return,
-						}, middleware.Metadata{}, d.listTablesMockReturns.Error
 					case "BatchGetItem":
 						d.callCount["BatchGetItem"] += 1
 						return middleware.FinalizeOutput{
 							Result: &d.batchGetItemMockReturns.Return,
 						}, middleware.Metadata{}, d.batchGetItemMockReturns.Error
+					case "ListTables":
+						d.callCount["ListTables"] += 1
+						return middleware.FinalizeOutput{
+							Result: &d.listTablesMockReturns.Return,
+						}, middleware.Metadata{}, d.listTablesMockReturns.Error
 					}
 
 					return middleware.FinalizeOutput{}, middleware.Metadata{}, nil
@@ -82,8 +82,9 @@ func (d *DynamodbMock) DynamodbMiddlewareInjector() func(stack *middleware.Stack
 }
 
 type STSMock struct {
-	callCount             map[string]int
-	assumeRoleMockReturns AssumeRoleReturns
+	callCount                    map[string]int
+	assumeRoleMockReturns        AssumeRoleReturns
+	getCallerIdentityMockReturns GetCallerIdentityReturns
 }
 
 func NewSTSMock() *STSMock {
@@ -109,6 +110,19 @@ func (s *STSMock) SetAssumeRoleError(e error) {
 	s.assumeRoleMockReturns.Error = e
 }
 
+type GetCallerIdentityReturns struct {
+	Return sts.GetCallerIdentityOutput
+	Error  error
+}
+
+func (s *STSMock) SetGetCallerIdentityReturn(o sts.GetCallerIdentityOutput) {
+	s.getCallerIdentityMockReturns.Return = o
+}
+
+func (s *STSMock) SetGetCallerIdentityError(e error) {
+	s.getCallerIdentityMockReturns.Error = e
+}
+
 func (s *STSMock) STSMiddlewareInjector() func(stack *middleware.Stack) error {
 	return func(stack *middleware.Stack) error {
 		return stack.Finalize.Add(
@@ -121,6 +135,11 @@ func (s *STSMock) STSMiddlewareInjector() func(stack *middleware.Stack) error {
 						return middleware.FinalizeOutput{
 							Result: &s.assumeRoleMockReturns.Return,
 						}, middleware.Metadata{}, s.assumeRoleMockReturns.Error
+					case "GetCallerIdentity":
+						s.callCount["GetCallerIdentity"] += 1
+						return middleware.FinalizeOutput{
+							Result: &s.getCallerIdentityMockReturns.Return,
+						}, middleware.Metadata{}, s.getCallerIdentityMockReturns.Error
 					}
 
 					return middleware.FinalizeOutput{}, middleware.Metadata{}, nil

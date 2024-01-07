@@ -3,11 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	log "log/slog"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/dramich/aws-mocker/pkg/mock"
+	"github.com/dramich/aws-mocker/pkg/writer"
 )
 
 func main() {
@@ -36,12 +39,21 @@ func main() {
 		os.Exit(1)
 	}
 
+	var w io.Writer
+
+	if mockOpts.OutputDir == "" {
+		w = os.Stdout
+	} else {
+		w = writer.New(path.Join(mockOpts.OutputDir, mockOpts.PackageName+".go"))
+	}
+
+	mockOpts.Writer = w
+
 	err := mock.Run(&mockOpts)
 	if err != nil {
 		log.Error(err.Error())
 		os.Exit(1)
 	}
-
 }
 
 func logLevelFromArg(arg string) log.Level {
